@@ -1,0 +1,157 @@
+clear all
+close all
+
+% specify model
+%==========================================================================
+
+% number of sources and LFP channels (usually the same)
+%--------------------------------------------------------------------------
+n     = 2; % number of sources
+Nc    = 2; % number of channels
+
+M.dipfit.type = 'LFP';
+M.dipfit.model(1).source='MMC';
+M.dipfit.model(2).source='BGT';
+M.dipfit.Ns = n;
+M.dipfit.Nc = Nc;
+
+% specify network (connections)
+%--------------------------------------------------------------------------
+A{1}  = [0 1;0 0];                         % a forward connection
+A{2}  = [0 0;1 0];                         % a backward connection
+% A{1}  = [0 0;0 0];                         % a forward connection
+% A{2}  = [0 0;0 0];
+A{3}  = sparse(n,n);                       % lateral connections
+B     = {};                                % trial-specific modulation
+C     = speye(n,n);                        % sources receiving innovations
+
+% get priors
+%--------------------------------------------------------------------------
+[pE,pC]  = spm_dcm_neural_priors(A,B,C,M.dipfit.model); % neuronal priors
+[pE,pC] = spm_ssr_priors(pE,pC);           % spectral priors
+[pE,pC] = spm_L_priors(M.dipfit,pE,pC);    % spatial  priors
+
+% take priors from posterio inversion
+% load('bestmodels_nobadtrials/DCM_OFF0_ON1_full_base14_priorsONOFF3_c_noDSnoJAr_nobadtrials_rescaled_he16_hc4_deepmiddlemmc_indnoise_mmc512_bgc512_it5_nobadtrials_rescaled_OFFON_DF_left');
+% load('bestmodels_nobadtrials/DCM_OFFonly_optimizepriors_14_priorsONOFF3_he16_hc4_deepmiddlemmc_indnoise_mmc512_bgc512_c_noDSnoJAr_nobadtrials_rescaled_OFFON_DF_left');
+% pE=DCM.Ep;
+% pC=DCM.Cp;
+
+% pE.A{1}=-32*ones(2,2);
+% pE.A{2}=-32*ones(2,2);
+% pE.A{3}=-32*ones(2,2);
+% pE.A{4}=-32*ones(2,2);
+
+% Suppress channel noise
+%--------------------------------------------------------------------------
+pE.b  = pE.b - 16;
+pE.c  = pE.c - 16;
+
+% create LFP model
+%--------------------------------------------------------------------------
+
+[x,f]    = spm_dcm_x_neural(pE,M.dipfit.model);
+
+M.IS = 'spm_csd_mtf';
+%M.FS = 'spm_fs_csd';
+M.g  = 'spm_gx_erp';
+M.f  = f;
+M.x  = x;
+M.n  = length(spm_vec(x));
+M.pE = pE;
+M.pC = pC;
+M.m  = n;
+M.l  = Nc;
+M.Hz = (1:90);
+M.N  = []; % order of delay approximation
+ord  = {0 256 'no delay'};
+%M.u  = sparse(M.m,1);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+load('priors_gransaverage_OFF.mat');
+
+M.MMC_T     = MMC_T;
+M.MMC_G     = MMC_G;
+%M.BGC_T     = BGC_T;
+%M.BGC_G     = BGC_G;
+%M.BGC_E     = BGC_E;
+M.MMC_E     = MMC_E;
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+P = {'D','T','S','G'};
+
+% solve for steady state
+%--------------------------------------------------------------------------
+M.x     = spm_dcm_neural_x(pE,M);
+
+D     = 4;
+
+%USE obs=1 FOR CORTEX AND obs=2 FOR STN
+cortex = 1;
+stn    = 2;
+
+cols   = {'r','b','k','y','g'};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+for k = 1%:length(P)
+    Q = getfield(pE,P{k});
+
+    
+    % line search (with solution for steady state)
+    %----------------------------------------------------------
+    if strcmp(P{k},'D')
+        for ii = 1:numel(Q)
+            dQ(ii,:) = linspace(Q(ii) - D, Q(ii) + D,4);
+        end
+    end
+    dQ = [dQ(:,1:2) zeros(size(dQ,1),1) dQ(:,3:4)];
+    leg = {};
+    for l = 1:size(dQ,2)
+        leg = [leg, ['exp ' num2str(dQ(1,l))]];
+    end  
+    
+    
+    for q =  1:length(dQ)
+        qE     = pE;
+        qE     = setfield(qE,P{k},reshape(dQ(:,q),size(Q)));
+        
+        
+        U.N      = 1000;
+        U.dt     = 1/U.N;
+        U.time   = 1;
+        U.input  = [zeros(20,2) ;[ones(1,1) 0] ;zeros(U.N-1-20,2)];
+        y = integrate_CBG(pE,M,U);
+        U.input  = [zeros(20,2) ;[ 0 ones(1,1)] ;zeros(U.N-1-20,2)];
+        y1 = integrate_CBG(pE,M,U);
+                
+        subplot(2,length(dQ),q);
+        plot(0:U.dt:(U.N-1)*U.dt,U.input,'k:');
+        xlabel('time(s)')
+        ylabel('Amplitude');
+        xlim([0 0.2]);
+        set(gca,'FontSize',12);
+        
+        subplot(2,length(dQ),q+length(dQ));
+        plot((1:N+21).*U.dt,LFP(:,1),'r');hold on;
+        plot((1:N+21).*U.dt,LFP(:,2),'b:');hold on;
+        plot((1:N+21).*U.dt,LFP1(:,1),'r:');hold on;
+        plot((1:N+21).*U.dt,LFP1(:,2),'b');hold on;
+        xlabel('time(s)')
+        ylabel('Amplitude');
+        title(['IR delay exp' num2str(dQ(1,q))]);
+        xlim([0 0.2]);
+        set(gca,'FontSize',12);
+        if isequal(q,length(dQ))
+            l = legend({'M1 1','STN 2','M1 2', 'STN 1'});
+            set(l,'box','off');
+        end
+        
+        
+        figure;
+        plot(0:U.dt:(U.N-1)*U.dt,y);
+        xlim([0 0.2]);
+    end
+    
+end
